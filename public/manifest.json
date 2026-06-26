@@ -1,0 +1,26 @@
+{
+  "short_name": "Daily RPG",
+  "name": "Daily RPG - 習慣養成冒險",
+  "description": "將每天的習慣打卡變成 RPG 冒險旅程",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#C1644B",
+  "background_color": "#FBF1E9",
+  "lang": "zh-TW",
+  "categories": ["lifestyle", "productivity", "health"]
+}
