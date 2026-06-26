@@ -52,7 +52,14 @@ const CHARACTERS = [
 ];
 function getCharacter(id) { return CHARACTERS.find(c => c.id === id) || null; }
 
-/* ─── 角色健康狀態（衍生計算，不另外存可變狀態，避免漏算離線期間） ─── */
+/* ─── 角色健康狀態（衍生計算，不另外存可變狀態，避免漏算離線期間）
+   規則：當天沒完成 1 個習慣 → 不舒服；沒完成 3 個（含）以上 → 生病；
+   本週挑戰沒達成 → 直接生病；連續完成 2 天習慣才能恢復健康。 ─── */
+function characterStatusMeta(status) {
+  if (status === "sick") return { label: "生病了", emoji: "🤒", color: CLAY_DEEP };
+  if (status === "unwell") return { label: "不舒服", emoji: "😕", color: GOLD };
+  return { label: "健康", emoji: "💚", color: SAGE };
+}
 function computeCharacterStatus(user, today) {
   const habits = user.habits || [];
   if (!habits.length || !user.characterId) return { health: 100, status: "healthy", recoveryStreak: 0 };
@@ -73,20 +80,24 @@ function computeCharacterStatus(user, today) {
     const scheduled = habits.filter(h => !h.createdAt || new Date(h.createdAt) <= cursor);
     if (scheduled.length > 0) {
       const doneCount = scheduled.filter(h => (h.completions||[]).includes(dayKey)).length;
-      const fullyDone = doneCount === scheduled.length;
-      if (fullyDone) {
+      const missedCount = scheduled.length - doneCount;
+      if (missedCount === 0) {
         health = Math.min(100, health + 10);
-        if (status === "sick") {
+        if (status !== "healthy") {
           recoveryStreak++;
-          if (recoveryStreak >= 2) { status = "healthy"; health = Math.max(health, 60); }
+          if (recoveryStreak >= 2) { status = "healthy"; health = Math.max(health, 60); recoveryStreak = 0; }
         }
-      } else {
-        health = Math.max(0, health - 20);
+      } else if (missedCount >= 3) {
+        health = Math.max(0, health - 25);
         status = "sick";
+        recoveryStreak = 0;
+      } else {
+        health = Math.max(0, health - 12);
+        if (status !== "sick") status = "unwell";
         recoveryStreak = 0;
       }
     }
-    // 每週一檢查上一週的「本週挑戰」是否完成，沒完成額外扣血
+    // 每週一檢查上一週的「本週挑戰」是否完成，沒完成直接變生病
     if (cursor.getDay() === 1) {
       const lastWeekEnd = addDays(cursor, -1);
       const wc = getWeekChallenge(habits, lastWeekEnd);
@@ -781,22 +792,26 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
   const [genderTab, setGenderTab] = useState("female");
   const [, forceUpdate] = useState(0);
   const [toast, setToast] = useState("");
+  const [previewChar, setPreviewChar] = useState(null); // 點縮圖要先預覽再確認
+  const [viewEquipped, setViewEquipped] = useState(false); // 放大查看目前裝備角色
 
   const today = new Date();
   const status = computeCharacterStatus(user, today);
   const equipped = getCharacter(equippedId);
 
-  function pick(charId) {
+  function confirmPick(charId) {
     const isUnlocked = unlocked.includes(charId);
     if (isUnlocked) {
       onUpdate({ characterId: charId });
       forceUpdate(n=>n+1);
+      setPreviewChar(null);
       return;
     }
     if (hasFreePick) {
       onUpdate({ characterId: charId, unlockedCharacters: [...unlocked, charId] });
       setToast("🎉 已免費獲得這個角色！");
       forceUpdate(n=>n+1);
+      setPreviewChar(null);
       setTimeout(()=>setToast(""), 2200);
       return;
     }
@@ -804,10 +819,13 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
     onUpdate({ coins: coins - CHAR_PRICE, characterId: charId, unlockedCharacters: [...unlocked, charId] });
     setToast("✅ 解鎖成功並已換上新角色！");
     forceUpdate(n=>n+1);
+    setPreviewChar(null);
     setTimeout(()=>setToast(""), 2200);
   }
 
   const list = CHARACTERS.filter(c => c.gender === genderTab);
+  const previewIsUnlocked = previewChar && unlocked.includes(previewChar.id);
+  const previewIsEquipped = previewChar && equippedId === previewChar.id;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
@@ -820,20 +838,20 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
       </div>
 
       {equipped && (
-        <div style={{ background:t.card, border:`1.5px solid ${status.status==="sick"?`${CLAY_DEEP}55`:`${SAGE}55`}`, borderRadius:18, padding:"14px 16px", display:"flex", alignItems:"center", gap:14 }}>
-          <div style={{ position:"relative", width:64, height:64, borderRadius:14, overflow:"hidden", background:t.chip, flexShrink:0 }}>
-            <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:status.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
+        <button onClick={()=>setViewEquipped(true)} style={{ background:t.card, border:`1.5px solid ${status.status==="sick"?`${CLAY_DEEP}55`:`${SAGE}55`}`, borderRadius:18, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, cursor:"pointer", textAlign:"left" }}>
+          <div style={{ position:"relative", width:64, height:96, borderRadius:14, overflow:"hidden", background:t.chip, flexShrink:0 }}>
+            <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"contain", filter:status.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
             {status.status==="sick" && (<div style={{ position:"absolute", top:2, right:2, fontSize:16 }}>🤒</div>)}
           </div>
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:14, color:t.ink, marginBottom:4 }}>目前裝備：{equipped.name}</div>
+            <div style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:14, color:t.ink, marginBottom:4 }}>目前裝備：{equipped.name}<span style={{ fontSize:10.5, color:t.muted, fontWeight:400, marginLeft:6 }}>🔍 點擊放大</span></div>
             <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
               <span style={{ fontSize:11, color:t.muted, fontFamily:"Inter, sans-serif" }}>{status.status==="sick"?"🤒 生病了":"💚 健康"}</span>
             </div>
             <ProgressBar value={status.health} color={status.status==="sick"?CLAY_DEEP:SAGE} t={t} height={6} />
             {status.status==="sick" && (<div style={{ fontSize:10.5, color:t.muted, fontFamily:"Inter, sans-serif", marginTop:4 }}>連續完成 2 天習慣即可恢復健康（目前 {status.recoveryStreak}/2）</div>)}
           </div>
-        </div>
+        </button>
       )}
 
       <p style={{ fontSize:12.5, color:t.muted, fontFamily:"Inter, sans-serif", margin:0 }}>
@@ -849,24 +867,64 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
 
       {toast && (<div style={{ textAlign:"center", fontSize:12.5, color:CLAY, fontFamily:"Inter, sans-serif", fontWeight:700 }}>{toast}</div>)}
 
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10 }}>
         {list.map(c => {
           const isUnlocked = unlocked.includes(c.id);
           const isEquipped = equippedId === c.id;
           return (
-            <button key={c.id} onClick={()=>pick(c.id)} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"8px 4px 8px", borderRadius:14, border:`1.5px solid ${isEquipped?CLAY:isUnlocked?`${SAGE}55`:t.border}`, background:t.card, cursor:"pointer", position:"relative" }}>
-              <div style={{ width:"100%", aspectRatio:"1", borderRadius:10, overflow:"hidden", background:t.chip, position:"relative" }}>
-                <img src={c.img} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:isUnlocked?"none":"grayscale(0.85) brightness(0.75)" }} />
-                {!isUnlocked && (<div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🔒</div>)}
+            <button key={c.id} onClick={()=>setPreviewChar(c)} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"8px 6px 8px", borderRadius:14, border:`1.5px solid ${isEquipped?CLAY:isUnlocked?`${SAGE}55`:t.border}`, background:t.card, cursor:"pointer", position:"relative" }}>
+              <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:10, overflow:"hidden", background:t.chip, position:"relative" }}>
+                <img src={c.img} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"contain", filter:isUnlocked?"none":"grayscale(0.85) brightness(0.8)" }} />
+                {!isUnlocked && (<div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, background:"rgba(0,0,0,0.08)" }}>🔒</div>)}
                 {isEquipped && (<div style={{ position:"absolute", top:3, right:3, background:CLAY, color:"#fff", fontSize:9, fontWeight:700, borderRadius:6, padding:"1px 5px" }}>使用中</div>)}
               </div>
               <div style={{ fontSize:10, color:isUnlocked?t.ink:t.mutedSoft, fontFamily:"Inter, sans-serif", fontWeight:600 }}>
-                {isUnlocked ? (isEquipped ? "✓ 使用中" : "點擊裝備") : hasFreePick ? "🎁 免費" : `🪙 ${CHAR_PRICE}`}
+                {isUnlocked ? (isEquipped ? "✓ 使用中" : "點擊查看") : hasFreePick ? "🎁 免費" : `🪙 ${CHAR_PRICE}`}
               </div>
             </button>
           );
         })}
       </div>
+
+      {/* 角色預覽／確認購買 Modal */}
+      {previewChar && (
+        <div onClick={()=>setPreviewChar(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:t.card, borderRadius:20, padding:18, width:"100%", maxWidth:300, display:"flex", flexDirection:"column", gap:12 }}>
+            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:14, overflow:"hidden", background:t.chip }}>
+              <img src={previewChar.img} alt={previewChar.name} style={{ width:"100%", height:"100%", objectFit:"contain" }} />
+            </div>
+            <div style={{ textAlign:"center" }}>
+              <div style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:16, color:t.ink, marginBottom:4 }}>{previewChar.name}</div>
+              <div style={{ fontSize:12, color:t.muted, fontFamily:"Inter, sans-serif" }}>
+                {previewIsUnlocked ? (previewIsEquipped ? "目前正在使用這個角色" : "已擁有，可直接裝備") : hasFreePick ? "🎁 第一次免費選擇起始角色" : `解鎖價格：🪙 ${CHAR_PRICE}`}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={()=>setPreviewChar(null)} style={{ flex:1, padding:"10px 0", borderRadius:12, border:`1px solid ${t.border}`, background:"none", color:t.muted, fontWeight:700, fontSize:13, fontFamily:"Inter, sans-serif", cursor:"pointer" }}>取消</button>
+              {previewIsEquipped ? (
+                <button disabled style={{ flex:1, padding:"10px 0", borderRadius:12, border:"none", background:t.chip, color:t.mutedSoft, fontWeight:700, fontSize:13, fontFamily:"Inter, sans-serif" }}>✓ 使用中</button>
+              ) : (
+                <button onClick={()=>confirmPick(previewChar.id)} disabled={!previewIsUnlocked && !hasFreePick && coins < CHAR_PRICE} style={{ flex:1, padding:"10px 0", borderRadius:12, border:"none", background:(!previewIsUnlocked && !hasFreePick && coins < CHAR_PRICE)?t.chip:CLAY, color:(!previewIsUnlocked && !hasFreePick && coins < CHAR_PRICE)?t.mutedSoft:"#fff", fontWeight:700, fontSize:13, fontFamily:"Inter, sans-serif", cursor:"pointer" }}>
+                  {previewIsUnlocked ? "裝備這個角色" : hasFreePick ? "確認免費解鎖" : `確認購買 🪙 ${CHAR_PRICE}`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 目前裝備角色放大檢視 */}
+      {viewEquipped && equipped && (
+        <div onClick={()=>setViewEquipped(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ width:"100%", maxWidth:320, display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:18, overflow:"hidden", background:t.card }}>
+              <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"contain" }} />
+            </div>
+            <div style={{ textAlign:"center", color:"#fff", fontFamily:"Fraunces, serif", fontWeight:700, fontSize:15 }}>{equipped.name}</div>
+            <button onClick={()=>setViewEquipped(false)} style={{ alignSelf:"center", padding:"8px 20px", borderRadius:12, border:"none", background:"rgba(255,255,255,0.16)", color:"#fff", fontWeight:700, fontSize:13, fontFamily:"Inter, sans-serif", cursor:"pointer" }}>關閉</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
