@@ -31,6 +31,7 @@ function setupSheet() {
     "avatarPreset", "avatarUrl", "bio", "activeTitle",
     "level", "coins", "habits", "friendIds",
     "unlockedTitles", "claimedChallenges", "pendingFriendRequests",
+    "characterId", "unlockedCharacters",
     "createdAt", "updatedAt"
   ];
   sheet.appendRow(headers);
@@ -79,6 +80,8 @@ function publicUser(obj) {
     try { claimedChallenges = JSON.parse(obj.claimedChallenges || "[]"); } catch (e) {}
     let pendingFriendRequests = [];
     try { pendingFriendRequests = JSON.parse(obj.pendingFriendRequests || "[]"); } catch (e) {}
+    let unlockedCharacters = [];
+    try { unlockedCharacters = JSON.parse(obj.unlockedCharacters || "[]"); } catch (e) {}
 
   return {
     id: obj.id,
@@ -95,6 +98,8 @@ function publicUser(obj) {
     unlockedTitles: unlockedTitles,
     claimedChallenges: claimedChallenges,
     pendingFriendRequests: pendingFriendRequests,
+    characterId: obj.characterId || "",
+    unlockedCharacters: unlockedCharacters,
     createdAt: obj.createdAt || "",
   };
 }
@@ -182,6 +187,8 @@ function doPost(e) {
         unlockedTitles: JSON.stringify(["rookie"]),
         claimedChallenges: "[]",
         pendingFriendRequests: "[]",
+        characterId: "",
+        unlockedCharacters: "[]",
         createdAt: now,
         updatedAt: now,
       };
@@ -265,6 +272,8 @@ function doPost(e) {
         unlockedTitles: typeof u.unlockedTitles === "string" ? u.unlockedTitles : JSON.stringify(u.unlockedTitles || ["rookie"]),
         claimedChallenges: typeof u.claimedChallenges === "string" ? u.claimedChallenges : JSON.stringify(u.claimedChallenges || []),
         pendingFriendRequests: typeof u.pendingFriendRequests === "string" ? u.pendingFriendRequests : JSON.stringify(u.pendingFriendRequests || []),
+        characterId: u.characterId != null ? u.characterId : existing.characterId,
+        unlockedCharacters: typeof u.unlockedCharacters === "string" ? u.unlockedCharacters : JSON.stringify(u.unlockedCharacters || []),
         updatedAt: new Date().toISOString(),
         // passwordHash 永遠保留原值，upsert 不會更動密碼
       });

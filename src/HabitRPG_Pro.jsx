@@ -44,6 +44,66 @@ const PLANT_STAGES = [
   { level: 1,  emoji: "🌱", label: "種子" },
 ];
 
+/* ─── 角色圖鑑（男生 / 女生 各 16 個） ─── */
+const CHAR_PRICE = 200; // 除第一次免費選擇外，其餘角色解鎖統一價格
+const CHARACTERS = [
+  ...Array.from({length:16}, (_,i)=>({ id:`f${String(i+1).padStart(2,"0")}`, gender:"female", name:`女生角色 ${i+1}`, img:`/characters/female/f${String(i+1).padStart(2,"0")}.${[7,16].includes(i+1)?"png":"jpg"}` })),
+  ...Array.from({length:16}, (_,i)=>({ id:`m${String(i+1).padStart(2,"0")}`, gender:"male", name:`男生角色 ${i+1}`, img:`/characters/male/m${String(i+1).padStart(2,"0")}.${[7,8,9,16].includes(i+1)?"png":"jpg"}` })),
+];
+function getCharacter(id) { return CHARACTERS.find(c => c.id === id) || null; }
+
+/* ─── 角色健康狀態（衍生計算，不另外存可變狀態，避免漏算離線期間） ─── */
+function computeCharacterStatus(user, today) {
+  const habits = user.habits || [];
+  if (!habits.length || !user.characterId) return { health: 100, status: "healthy", recoveryStreak: 0 };
+
+  const earliest = habits.reduce((min,h) => {
+    if (!h.createdAt) return min;
+    const c = new Date(h.createdAt);
+    return c < min ? c : min;
+  }, today);
+  const windowStart = new Date(Math.max(addDays(today, -30).getTime(), new Date(toKey(earliest)).getTime()));
+
+  let health = 100, status = "healthy", recoveryStreak = 0;
+  let cursor = new Date(windowStart);
+  const yesterday = addDays(today, -1);
+
+  while (cursor <= yesterday) {
+    const dayKey = toKey(cursor);
+    const scheduled = habits.filter(h => !h.createdAt || new Date(h.createdAt) <= cursor);
+    if (scheduled.length > 0) {
+      const doneCount = scheduled.filter(h => (h.completions||[]).includes(dayKey)).length;
+      const fullyDone = doneCount === scheduled.length;
+      if (fullyDone) {
+        health = Math.min(100, health + 10);
+        if (status === "sick") {
+          recoveryStreak++;
+          if (recoveryStreak >= 2) { status = "healthy"; health = Math.max(health, 60); }
+        }
+      } else {
+        health = Math.max(0, health - 20);
+        status = "sick";
+        recoveryStreak = 0;
+      }
+    }
+    // 每週一檢查上一週的「本週挑戰」是否完成，沒完成額外扣血
+    if (cursor.getDay() === 1) {
+      const lastWeekEnd = addDays(cursor, -1);
+      const wc = getWeekChallenge(habits, lastWeekEnd);
+      if (wc) {
+        const claimed = (user.claimedChallenges||[]).includes(wc.wsKey);
+        if (!claimed && !wc.complete) {
+          health = Math.max(0, health - 25);
+          status = "sick";
+          recoveryStreak = 0;
+        }
+      }
+    }
+    cursor = addDays(cursor, 1);
+  }
+  return { health, status, recoveryStreak };
+}
+
 const ALL_TITLES = [
   { id: "rookie",     label: "新人冒險者", cost: 0,    desc: "剛開始旅程（預設）",    emoji: "🌱" },
   { id: "apprentice", label: "習慣學徒",  cost: 50,   desc: "連續打卡 7 天後可解鎖", emoji: "📖" },
@@ -229,6 +289,8 @@ async function gasSyncUser(user) {
         unlockedTitles: JSON.stringify(user.unlockedTitles || ["rookie"]),
         claimedChallenges: JSON.stringify(user.claimedChallenges || []),
         pendingFriendRequests: JSON.stringify(user.pendingFriendRequests || []),
+        characterId: user.characterId || "",
+        unlockedCharacters: JSON.stringify(user.unlockedCharacters || []),
       },
     });
   } catch { return { ok: false }; }
@@ -558,31 +620,67 @@ function ProfileScreen({ user, onBack, onSave, t }) {
   const inputStyle = { width:"100%", padding:"11px 13px", borderRadius:12, border:`1px solid ${t.borderStrong}`, background:t.cardAlt, color:t.ink, fontSize:14, fontFamily:"Inter, sans-serif", outline:"none", boxSizing:"border-box" };
 
   const [uploadError, setUploadError] = useState("");
+  const [uploading, setUploading] = useState(false);
 
-  function handleFileChange(e) {
+  async function handleFileChange(e) {
     const file = e.target.files[0]; if (!file) return;
-    setUploadError("");
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const img = new Image();
-      img.onload = () => {
-        // 壓縮圖片：限制最大邊長並轉成 JPEG，避免手機原圖過大導致 localStorage 容量爆滿而存檔失敗
-        const MAX_SIZE = 256;
-        let { width, height } = img;
+    e.target.value = ""; // 允許重新選同一張檔案
+    setUploadError(""); setUploading(true);
+    const MAX_SIZE = 256;
+
+    function finish(dataUrl) { setAvatarUrl(dataUrl); setUploading(false); }
+    function fail(msg) { setUploadError(msg); setUploading(false); }
+
+    try {
+      if (typeof window.createImageBitmap === "function") {
+        // 優先用瀏覽器原生解碼＋縮放，比較省記憶體，手機高畫質照片（千萬像素以上）也能正常處理
+        let bitmap;
+        try {
+          bitmap = await createImageBitmap(file);
+        } catch (err) {
+          throw new Error("decode-failed");
+        }
+        let { width, height } = bitmap;
         if (width > height) { if (width > MAX_SIZE) { height = Math.round(height * (MAX_SIZE / width)); width = MAX_SIZE; } }
         else { if (height > MAX_SIZE) { width = Math.round(width * (MAX_SIZE / height)); height = MAX_SIZE; } }
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close && bitmap.close();
         const compressed = canvas.toDataURL("image/jpeg", 0.75);
-        setAvatarUrl(compressed);
+        if (!compressed || compressed === "data:,") { fail("圖片太大，無法處理，請換一張較小的照片"); return; }
+        finish(compressed);
+        return;
+      }
+      throw new Error("no-bitmap-support");
+    } catch (err) {
+      // 退回傳統方式：用 FileReader + Image 解碼（部分舊版瀏覽器或不支援 createImageBitmap 時）
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            let { width, height } = img;
+            if (width > height) { if (width > MAX_SIZE) { height = Math.round(height * (MAX_SIZE / width)); width = MAX_SIZE; } }
+            else { if (height > MAX_SIZE) { width = Math.round(width * (MAX_SIZE / height)); height = MAX_SIZE; } }
+            const canvas = document.createElement("canvas");
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressed = canvas.toDataURL("image/jpeg", 0.75);
+            if (!compressed || compressed === "data:,") { fail("圖片太大，無法處理，請換一張較小的照片"); return; }
+            finish(compressed);
+          } catch (e2) {
+            fail("圖片處理失敗，請換一張較小的照片再試一次");
+          }
+        };
+        img.onerror = () => fail("圖片格式無法讀取，請換一張 JPG 或 PNG 照片試試");
+        img.src = ev.target.result;
       };
-      img.onerror = () => setUploadError("圖片讀取失敗，請換一張試試");
-      img.src = ev.target.result;
-    };
-    reader.onerror = () => setUploadError("圖片讀取失敗，請換一張試試");
-    reader.readAsDataURL(file);
+      reader.onerror = () => fail("圖片讀取失敗，請換一張試試");
+      reader.readAsDataURL(file);
+    }
   }
   function handleSave() {
     const ok = onSave({ username, bio, avatarPreset, avatarUrl });
@@ -598,7 +696,7 @@ function ProfileScreen({ user, onBack, onSave, t }) {
       </div>
       <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:10 }}>
         <Avatar user={{ ...user, username, bio, avatarPreset, avatarUrl }} size={72} />
-        <button onClick={()=>fileRef.current?.click()} style={{ fontSize:12, color:CLAY, background:"none", border:"none", cursor:"pointer", fontFamily:"Inter, sans-serif", fontWeight:600 }}>上傳自訂頭像</button>
+        <button onClick={()=>fileRef.current?.click()} disabled={uploading} style={{ fontSize:12, color:CLAY, background:"none", border:"none", cursor:uploading?"default":"pointer", fontFamily:"Inter, sans-serif", fontWeight:600, opacity:uploading?0.6:1 }}>{uploading?"處理中…":"上傳自訂頭像"}</button>
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display:"none" }} />
         {uploadError&&(<div style={{ fontSize:11.5, color:CLAY_DEEP, fontFamily:"Inter, sans-serif", textAlign:"center" }}>{uploadError}</div>)}
       </div>
@@ -673,6 +771,107 @@ function TitlesScreen({ user, onBack, onUpdate, t }) {
 }
 
 /* ══════════════════════════════════════════
+   角色圖鑑（男生 / 女生 各 16 個，第一次免費，之後統一價格解鎖）
+   ══════════════════════════════════════════ */
+function CharacterDexScreen({ user, onBack, onUpdate, t }) {
+  const coins = user.coins || 0;
+  const unlocked = user.unlockedCharacters || [];
+  const equippedId = user.characterId || "";
+  const hasFreePick = unlocked.length === 0;
+  const [genderTab, setGenderTab] = useState("female");
+  const [, forceUpdate] = useState(0);
+  const [toast, setToast] = useState("");
+
+  const today = new Date();
+  const status = computeCharacterStatus(user, today);
+  const equipped = getCharacter(equippedId);
+
+  function pick(charId) {
+    const isUnlocked = unlocked.includes(charId);
+    if (isUnlocked) {
+      onUpdate({ characterId: charId });
+      forceUpdate(n=>n+1);
+      return;
+    }
+    if (hasFreePick) {
+      onUpdate({ characterId: charId, unlockedCharacters: [...unlocked, charId] });
+      setToast("🎉 已免費獲得這個角色！");
+      forceUpdate(n=>n+1);
+      setTimeout(()=>setToast(""), 2200);
+      return;
+    }
+    if (coins < CHAR_PRICE) { setToast("金幣不足，再多完成幾個習慣吧！"); setTimeout(()=>setToast(""), 2200); return; }
+    onUpdate({ coins: coins - CHAR_PRICE, characterId: charId, unlockedCharacters: [...unlocked, charId] });
+    setToast("✅ 解鎖成功並已換上新角色！");
+    forceUpdate(n=>n+1);
+    setTimeout(()=>setToast(""), 2200);
+  }
+
+  const list = CHARACTERS.filter(c => c.gender === genderTab);
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <button onClick={onBack} style={{ background:"none", border:"none", color:t.muted, fontSize:13, cursor:"pointer", fontFamily:"Inter, sans-serif", padding:0 }}>← 返回</button>
+          <span style={{ fontFamily:"Fraunces, serif", fontSize:18, fontWeight:600, color:t.ink }}>角色圖鑑</span>
+        </div>
+        <CoinBadge coins={coins} />
+      </div>
+
+      {equipped && (
+        <div style={{ background:t.card, border:`1.5px solid ${status.status==="sick"?`${CLAY_DEEP}55`:`${SAGE}55`}`, borderRadius:18, padding:"14px 16px", display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ position:"relative", width:64, height:64, borderRadius:14, overflow:"hidden", background:t.chip, flexShrink:0 }}>
+            <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:status.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
+            {status.status==="sick" && (<div style={{ position:"absolute", top:2, right:2, fontSize:16 }}>🤒</div>)}
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:14, color:t.ink, marginBottom:4 }}>目前裝備：{equipped.name}</div>
+            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:4 }}>
+              <span style={{ fontSize:11, color:t.muted, fontFamily:"Inter, sans-serif" }}>{status.status==="sick"?"🤒 生病了":"💚 健康"}</span>
+            </div>
+            <ProgressBar value={status.health} color={status.status==="sick"?CLAY_DEEP:SAGE} t={t} height={6} />
+            {status.status==="sick" && (<div style={{ fontSize:10.5, color:t.muted, fontFamily:"Inter, sans-serif", marginTop:4 }}>連續完成 2 天習慣即可恢復健康（目前 {status.recoveryStreak}/2）</div>)}
+          </div>
+        </div>
+      )}
+
+      <p style={{ fontSize:12.5, color:t.muted, fontFamily:"Inter, sans-serif", margin:0 }}>
+        {hasFreePick ? "第一次可以免費選一個角色當作起始角色！之後的角色都需要花金幣解鎖。" : `每個角色解鎖價格統一為 🪙 ${CHAR_PRICE}，解鎖後可以隨時免費切換已擁有的角色。`}
+        若忘記完成習慣或本週挑戰，角色會扣血、甚至生病；連續完成 2 天習慣即可恢復健康。
+      </p>
+
+      <div style={{ display:"flex", gap:8 }}>
+        {[["female","👩 女生"],["male","🧑 男生"]].map(([key,label])=>(
+          <button key={key} onClick={()=>setGenderTab(key)} style={{ flex:1, padding:"9px 0", borderRadius:12, border:"none", background:genderTab===key?CLAY:t.chip, color:genderTab===key?"#fff":t.muted, fontWeight:700, fontSize:13, fontFamily:"Inter, sans-serif", cursor:"pointer" }}>{label}</button>
+        ))}
+      </div>
+
+      {toast && (<div style={{ textAlign:"center", fontSize:12.5, color:CLAY, fontFamily:"Inter, sans-serif", fontWeight:700 }}>{toast}</div>)}
+
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8 }}>
+        {list.map(c => {
+          const isUnlocked = unlocked.includes(c.id);
+          const isEquipped = equippedId === c.id;
+          return (
+            <button key={c.id} onClick={()=>pick(c.id)} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"8px 4px 8px", borderRadius:14, border:`1.5px solid ${isEquipped?CLAY:isUnlocked?`${SAGE}55`:t.border}`, background:t.card, cursor:"pointer", position:"relative" }}>
+              <div style={{ width:"100%", aspectRatio:"1", borderRadius:10, overflow:"hidden", background:t.chip, position:"relative" }}>
+                <img src={c.img} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:isUnlocked?"none":"grayscale(0.85) brightness(0.75)" }} />
+                {!isUnlocked && (<div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🔒</div>)}
+                {isEquipped && (<div style={{ position:"absolute", top:3, right:3, background:CLAY, color:"#fff", fontSize:9, fontWeight:700, borderRadius:6, padding:"1px 5px" }}>使用中</div>)}
+              </div>
+              <div style={{ fontSize:10, color:isUnlocked?t.ink:t.mutedSoft, fontFamily:"Inter, sans-serif", fontWeight:600 }}>
+                {isUnlocked ? (isEquipped ? "✓ 使用中" : "點擊裝備") : hasFreePick ? "🎁 免費" : `🪙 ${CHAR_PRICE}`}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
    Friends Screen（Google Sheet 搜尋 + 好友邀請）
    ══════════════════════════════════════════ */
 function FriendsScreen({ user, onBack, t }) {
@@ -686,20 +885,36 @@ function FriendsScreen({ user, onBack, t }) {
   const [loadingFriend, setLoadingFriend] = useState(null);
   const [, forceUpdate] = useState(0);
       const today = new Date();
+  const [selfSyncing, setSelfSyncing] = useState(false);
+
+  // 重新從後端拉自己最新的資料（friendIds / pendingFriendRequests）。
+  // 對方在「他自己的」裝置上同意好友邀請，只會更新後端的 Sheet，不會主動推給我；
+  // 所以打開好友頁面時要自己去後端問一次「我現在的好友名單是什麼」，否則本機快取的舊資料永遠不會更新。
+  async function refreshSelfFromGAS() {
+    if (!GAS_CONFIGURED || !user.email) return;
+    setSelfSyncing(true);
+    try {
+      const freshData = await gasFetchByEmail(user.email);
+      if (freshData) { updateUser(user.id, freshData); forceUpdate(n => n + 1); }
+    } finally { setSelfSyncing(false); }
+  }
+
+  useEffect(() => { refreshSelfFromGAS(); }, []);
+
 
   useEffect(() => {
     if (tab === "friends" || tab === "pending") {
       const ids = tab === "friends" ? getLocalFriendIds() : getPendingRequests();
       ids.forEach(id => {
         const cached = getFriendData(id);
-        if (!cached || !cached.username) {
-          const local = getUserById(id);
-          if (local && local.email) {
-            fetchFriendFromGAS(id, local.email);
-          } else if (GAS_CONFIGURED) {
-            // 本地完全沒有這個 ID 的資料（跨裝置加的好友），改用 ID 查詢後端
-            fetchFriendByIdFromGAS(id);
-          }
+        const local = getUserById(id);
+        const email = (cached && cached.email) || (local && local.email);
+        if (email) {
+          // 每次打開頁面都重新抓一次最新資料，這樣好友剛打卡完不用手動按同步就能看到
+          fetchFriendFromGAS(id, email);
+        } else if (GAS_CONFIGURED) {
+          // 本地完全沒有這個 ID 的資料（跨裝置加的好友），改用 ID 查詢後端
+          fetchFriendByIdFromGAS(id);
         }
       });
     }
@@ -861,7 +1076,7 @@ function FriendsScreen({ user, onBack, t }) {
   if (selectedFriendId) {
     const selectedFriend = getFriendData(selectedFriendId);
     if (selectedFriend) {
-      return <FriendDetailView friend={selectedFriend} onBack={() => setSelectedFriendId(null)} t={t} />;
+      return <FriendDetailView friend={selectedFriend} onBack={() => setSelectedFriendId(null)} t={t} onRefresh={()=>fetchFriendFromGAS(selectedFriendId, selectedFriend.email)} refreshing={loadingFriend===selectedFriendId} />;
     }
   }
   
@@ -869,7 +1084,8 @@ function FriendsScreen({ user, onBack, t }) {
     <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
         <button onClick={onBack} style={{ background:"none", border:"none", color:t.muted, fontSize:13, cursor:"pointer", fontFamily:"Inter, sans-serif", padding:0 }}>← 返回</button>
-        <span style={{ fontFamily:"Fraunces, serif", fontSize:18, fontWeight:600, color:t.ink }}>好友 · 監督</span>
+        <span style={{ fontFamily:"Fraunces, serif", fontSize:18, fontWeight:600, color:t.ink, flex:1 }}>好友 · 監督</span>
+        <button onClick={refreshSelfFromGAS} disabled={selfSyncing} style={{ border:"none", background:t.chip, borderRadius:10, padding:"6px 10px", cursor:selfSyncing?"default":"pointer", fontSize:12, color:t.muted, fontFamily:"Inter, sans-serif", fontWeight:600, opacity:selfSyncing?0.6:1 }}>{selfSyncing?"同步中…":"🔄 重新整理"}</button>
       </div>
 
       <div style={{ background:GAS_CONFIGURED?`${SAGE}18`:`${GOLD}18`, border:`1px solid ${GAS_CONFIGURED?SAGE:GOLD}44`, borderRadius:10, padding:"8px 12px", fontSize:11.5, color:GAS_CONFIGURED?SAGE:GOLD, fontFamily:"Inter, sans-serif", fontWeight:600 }}>
@@ -1299,6 +1515,10 @@ function FriendDetailView({ friend, onBack, t }) {
   const { level } = levelInfo(xp);
   const plant = plantStage(level);
   
+  // 角色裝備與健康狀態
+  const friendCharacter = getCharacter(friend.characterId);
+  const friendCharStatus = computeCharacterStatus(friend, today);
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
       {/* 頭部：返回按鈕 + 好友名稱 */}
@@ -1329,6 +1549,21 @@ function FriendDetailView({ friend, onBack, t }) {
           )}
         </div>
       </div>
+
+      {/* 好友的角色裝備 */}
+      {friendCharacter && (
+        <div style={{ background:t.card, border:`1.5px solid ${friendCharStatus.status==="sick"?`${CLAY_DEEP}55`:`${SAGE}55`}`, borderRadius:18, padding:"14px 16px", display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ position:"relative", width:54, height:54, borderRadius:12, overflow:"hidden", background:t.chip, flexShrink:0 }}>
+            <img src={friendCharacter.img} alt={friendCharacter.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:friendCharStatus.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
+            {friendCharStatus.status==="sick" && (<div style={{ position:"absolute", top:1, right:1, fontSize:14 }}>🤒</div>)}
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:11, color:t.muted, fontFamily:"Inter, sans-serif", marginBottom:2 }}>裝備角色</div>
+            <div style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:13, color:t.ink, marginBottom:4 }}>{friendCharacter.name} · {friendCharStatus.status==="sick"?"🤒 生病了":"💚 健康"}</div>
+            <ProgressBar value={friendCharStatus.health} color={friendCharStatus.status==="sick"?CLAY_DEEP:SAGE} t={t} height={5} />
+          </div>
+        </div>
+      )}
       
       {/* 進度統計卡片 */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
@@ -1458,10 +1693,20 @@ function FriendHabitCard({ friend, t, onRemind, remCount }) {
   const xp = computeUserXP(friend);
   const { level } = levelInfo(xp);
   const plant = plantStage(level);
+  const friendCharacter = getCharacter(friend.characterId);
+  const friendCharStatus = computeCharacterStatus(friend, today);
   return (
     <div style={{ background:t.card, border:`1px solid ${t.border}`, borderRadius:18, padding:"16px", display:"flex", gap:12 }}>
       <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8, flexShrink:0 }}>
-        <Avatar user={friend} size={56} />
+        <div style={{ position:"relative" }}>
+          <Avatar user={friend} size={56} />
+          {friendCharacter && (
+            <div style={{ position:"absolute", bottom:-4, right:-4, width:24, height:24, borderRadius:8, overflow:"hidden", border:`2px solid ${t.card}`, background:t.chip }}>
+              <img src={friendCharacter.img} alt={friendCharacter.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:friendCharStatus.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
+            </div>
+          )}
+          {friendCharacter && friendCharStatus.status==="sick" && (<div style={{ position:"absolute", top:-4, right:-6, fontSize:13 }}>🤒</div>)}
+        </div>
         <div style={{ fontSize:28 }}>{plant.emoji}</div>
       </div>
       <div style={{ flex:1, minWidth:0 }}>
@@ -1656,6 +1901,8 @@ export default function App() {
   const xp=computeUserXP(user); const {level,pct:levelPct}=levelInfo(xp);
   const plant=plantStage(level); const coins=user.coins||0;
   const activeTitle=ALL_TITLES.find(tt=>tt.id===(user.activeTitle||"rookie"))||ALL_TITLES[0];
+  const equippedCharacter=getCharacter(user.characterId);
+  const characterStatus=computeCharacterStatus(user, new Date());
   const challenge=getWeekChallenge(habits,today);
   const challengeClaimed=challenge&&(user.claimedChallenges||[]).includes(challenge.wsKey);
   const completedToday=habits.filter(h=>(h.completions||[]).includes(todayKey)).length;
@@ -1673,6 +1920,7 @@ export default function App() {
   if(subScreen==="profile") return subScreenWrapper(<ProfileScreen user={user} onBack={()=>setSubScreen(null)} onSave={handleSaveProfile} t={t} />);
   if(subScreen==="friends") return subScreenWrapper(<FriendsScreen user={user} onBack={()=>{setSubScreen(null);refreshUser();}} t={t} />);
   if(subScreen==="titles") return subScreenWrapper(<TitlesScreen user={user} onBack={()=>{setSubScreen(null);refreshUser();}} onUpdate={handleUpdateUser} t={t} />);
+  if(subScreen==="chardex") return subScreenWrapper(<CharacterDexScreen user={user} onBack={()=>{setSubScreen(null);refreshUser();}} onUpdate={handleUpdateUser} t={t} />);
   if(subScreen==="leaderboard") return subScreenWrapper(<LeaderboardScreen user={user} onBack={()=>setSubScreen(null)} t={t} />);
   if(subScreen==="shop") return subScreenWrapper(<PetShopScreen user={user} onBack={()=>{setSubScreen(null);refreshUser();}} onUpdateUser={handleUpdateUser} t={t} />);
 
@@ -1705,6 +1953,10 @@ export default function App() {
           <div style={{ display:"flex", gap:6, alignItems:"center", flexShrink:0 }}>
             <button onClick={()=>setSubScreen("titles")} style={{ display:"flex", alignItems:"center", gap:4, border:`1px solid ${COIN}55`, background:`${COIN}15`, borderRadius:10, padding:"5px 9px", cursor:"pointer" }}>
               <span style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:13, color:COIN }}>🪙 {coins}</span>
+            </button>
+            <button onClick={()=>setSubScreen("chardex")} title="角色圖鑑" style={{ position:"relative", border:"none", background:t.chip, borderRadius:10, width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", overflow:"hidden", padding:0 }}>
+              {equippedCharacter ? <img src={equippedCharacter.img} alt={equippedCharacter.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:characterStatus.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} /> : <span style={{ fontSize:16 }}>🪪</span>}
+              {equippedCharacter && characterStatus.status==="sick" && (<span style={{ position:"absolute", bottom:-2, right:-2, fontSize:12 }}>🤒</span>)}
             </button>
             <button onClick={()=>setShowMoreMenu(v=>!v)} style={{ border:"none", background:t.chip, borderRadius:10, width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:16, color:t.ink }}>⋯</button>
           </div>
