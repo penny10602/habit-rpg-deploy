@@ -45,7 +45,7 @@ const PLANT_STAGES = [
 ];
 
 /* ─── 角色圖鑑（男生 / 女生 各 16 個） ─── */
-const CHAR_PRICE = 200; // 除第一次免費選擇外，其餘角色解鎖統一價格
+const CHAR_PRICE = 100; // 除第一次免費選擇外，其餘角色解鎖統一價格
 const CHARACTERS = [
   ...Array.from({length:16}, (_,i)=>({ id:`f${String(i+1).padStart(2,"0")}`, gender:"female", name:`女生角色 ${i+1}`, img:`/characters/female/f${String(i+1).padStart(2,"0")}.${[7,16].includes(i+1)?"png":"jpg"}` })),
   ...Array.from({length:16}, (_,i)=>({ id:`m${String(i+1).padStart(2,"0")}`, gender:"male", name:`男生角色 ${i+1}`, img:`/characters/male/m${String(i+1).padStart(2,"0")}.${[7,8,9,16].includes(i+1)?"png":"jpg"}` })),
@@ -839,7 +839,7 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
 
       {equipped && (
         <button onClick={()=>setViewEquipped(true)} style={{ background:t.card, border:`1.5px solid ${status.status==="sick"?`${CLAY_DEEP}55`:`${SAGE}55`}`, borderRadius:18, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, cursor:"pointer", textAlign:"left" }}>
-          <div style={{ position:"relative", width:64, height:96, borderRadius:14, overflow:"hidden", background:t.chip, flexShrink:0 }}>
+          <div style={{ position:"relative", width:64, height:96, borderRadius:14, overflow:"hidden", background:"#fff", flexShrink:0 }}>
             <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"contain", filter:status.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} />
             {status.status==="sick" && (<div style={{ position:"absolute", top:2, right:2, fontSize:16 }}>🤒</div>)}
           </div>
@@ -873,7 +873,7 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
           const isEquipped = equippedId === c.id;
           return (
             <button key={c.id} onClick={()=>setPreviewChar(c)} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"8px 6px 8px", borderRadius:14, border:`1.5px solid ${isEquipped?CLAY:isUnlocked?`${SAGE}55`:t.border}`, background:t.card, cursor:"pointer", position:"relative" }}>
-              <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:10, overflow:"hidden", background:t.chip, position:"relative" }}>
+              <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:10, overflow:"hidden", background:"#fff", position:"relative" }}>
                 <img src={c.img} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"contain", filter:isUnlocked?"none":"grayscale(0.85) brightness(0.8)" }} />
                 {!isUnlocked && (<div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, background:"rgba(0,0,0,0.08)" }}>🔒</div>)}
                 {isEquipped && (<div style={{ position:"absolute", top:3, right:3, background:CLAY, color:"#fff", fontSize:9, fontWeight:700, borderRadius:6, padding:"1px 5px" }}>使用中</div>)}
@@ -890,7 +890,7 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
       {previewChar && (
         <div onClick={()=>setPreviewChar(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:20 }}>
           <div onClick={e=>e.stopPropagation()} style={{ background:t.card, borderRadius:20, padding:18, width:"100%", maxWidth:300, display:"flex", flexDirection:"column", gap:12 }}>
-            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:14, overflow:"hidden", background:t.chip }}>
+            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:14, overflow:"hidden", background:"#fff" }}>
               <img src={previewChar.img} alt={previewChar.name} style={{ width:"100%", height:"100%", objectFit:"contain" }} />
             </div>
             <div style={{ textAlign:"center" }}>
@@ -917,7 +917,7 @@ function CharacterDexScreen({ user, onBack, onUpdate, t }) {
       {viewEquipped && equipped && (
         <div onClick={()=>setViewEquipped(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:20 }}>
           <div onClick={e=>e.stopPropagation()} style={{ width:"100%", maxWidth:320, display:"flex", flexDirection:"column", gap:10 }}>
-            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:18, overflow:"hidden", background:t.card }}>
+            <div style={{ width:"100%", aspectRatio:"3/5", borderRadius:18, overflow:"hidden", background:"#fff" }}>
               <img src={equipped.img} alt={equipped.name} style={{ width:"100%", height:"100%", objectFit:"contain" }} />
             </div>
             <div style={{ textAlign:"center", color:"#fff", fontFamily:"Fraunces, serif", fontWeight:700, fontSize:15 }}>{equipped.name}</div>
@@ -2013,7 +2013,7 @@ export default function App() {
               <span style={{ fontFamily:"Fraunces, serif", fontWeight:700, fontSize:13, color:COIN }}>🪙 {coins}</span>
             </button>
             <button onClick={()=>setSubScreen("chardex")} title="角色圖鑑" style={{ position:"relative", border:"none", background:t.chip, borderRadius:10, width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", overflow:"hidden", padding:0 }}>
-              {equippedCharacter ? <img src={equippedCharacter.img} alt={equippedCharacter.name} style={{ width:"100%", height:"100%", objectFit:"cover", filter:characterStatus.status==="sick"?"saturate(0.4) brightness(0.85)":"none" }} /> : <span style={{ fontSize:16 }}>🪪</span>}
+              <span style={{ fontSize:16 }}>👥</span>
               {equippedCharacter && characterStatus.status==="sick" && (<span style={{ position:"absolute", bottom:-2, right:-2, fontSize:12 }}>🤒</span>)}
             </button>
             <button onClick={()=>setShowMoreMenu(v=>!v)} style={{ border:"none", background:t.chip, borderRadius:10, width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:16, color:t.ink }}>⋯</button>
